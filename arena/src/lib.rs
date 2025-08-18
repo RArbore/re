@@ -25,7 +25,7 @@ pub struct Arena<'a> {
     arena: ArenaInternal<'a>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BrandedArenaId<T> {
     id: u32,
     _phantom: PhantomData<T>,
