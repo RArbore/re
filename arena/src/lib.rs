@@ -78,16 +78,26 @@ impl<'a> ArenaInternal<'a> {
         }
     }
 
-    #[allow(dead_code)]
-    fn realign(self: ArenaInternal<'a>, align: usize) -> ArenaInternal<'a> {
-        let offset = self.offset.load(Ordering::Relaxed);
-        let align_offset = unsafe { self.ptr.add(offset) }.align_offset(align);
-        assert!(
-            offset + align_offset <= self.max,
-            "alignment too large to realign arena"
-        );
-        self.offset.store(offset + align_offset, Ordering::Relaxed);
-        self
+    fn realign<'b>(&'b self, align: usize) {
+        if align > 1 {
+            #[allow(unused_assignments)]
+            let mut aligned_offset = 0;
+            let mut old_offset = self.offset.load(Ordering::Relaxed);
+            loop {
+                aligned_offset =
+                    old_offset + unsafe { self.ptr.add(old_offset) }.align_offset(align);
+                assert!(aligned_offset <= self.max, "ran out of space in arena");
+                match self.offset.compare_exchange_weak(
+                    old_offset,
+                    aligned_offset,
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                ) {
+                    Ok(_) => break,
+                    Err(new_offset) => old_offset = new_offset,
+                }
+            }
+        }
     }
 
     fn alloc<'b>(&'b self, size: usize, align: Option<usize>) -> usize {
@@ -217,6 +227,44 @@ impl<'a> Arena<'a> {
             id: (offset / size_of::<T>()) as u32,
             _phantom: PhantomData,
         }
+    }
+
+    pub fn collect<'b, T, I>(&'b mut self, iter: I) -> &'b mut [T]
+    where
+        I: Iterator<Item = T>,
+    {
+        self.arena.realign(align_of::<T>());
+        let old_offset = self.arena.offset.load(Ordering::Relaxed);
+        let mut count = 0;
+        let ptr = unsafe { self.arena.ptr.add(old_offset) } as *mut T;
+        for x in iter {
+            self.arena.alloc(size_of::<T>(), None);
+            unsafe { *ptr.add(count) = x };
+            count += 1;
+        }
+        unsafe { slice::from_raw_parts_mut(ptr, count) }
+    }
+
+    pub fn collect_fn<'b, T, F>(&'b mut self, mut f: F) -> &'b mut [T]
+    where
+        F: FnMut(&mut dyn FnMut(T) -> BrandedArenaId<T>),
+    {
+        self.arena.realign(align_of::<T>());
+        let old_offset = self.arena.offset.load(Ordering::Relaxed);
+        let ptr = unsafe { self.arena.ptr.add(old_offset) } as *mut T;
+        let mut count = 0;
+        let mut pf = |x| {
+            self.arena.alloc(size_of::<T>(), None);
+            unsafe { *ptr.add(count) = x };
+            let id = (old_offset / size_of::<T>() + count) as u32;
+            count += 1;
+            BrandedArenaId {
+                id,
+                _phantom: PhantomData,
+            }
+        };
+        f(&mut pf);
+        unsafe { slice::from_raw_parts_mut(ptr, count) }
     }
 
     pub fn get<'b, T>(&'b self, id: BrandedArenaId<T>) -> &'b T {
@@ -390,5 +438,23 @@ mod tests {
         arena.new::<i8>(0);
         arena.new::<i8>(0);
         arena.new::<i8>(0);
+    }
+
+    #[test]
+    fn collect_backed_arena() {
+        let mut buf: [u64; 32] = [0; 32];
+        let mut arena = Arena::new_backed(&mut buf);
+        let slice = arena.collect(0..128u8);
+        for i in 0..128u8 {
+            assert_eq!(slice[i as usize], i);
+        }
+        let slice = arena.collect_fn(|alloc_fn| {
+            for count in 5..133u8 {
+                alloc_fn(count);
+            }
+        });
+        for i in 0..128u8 {
+            assert_eq!(slice[i as usize], i + 5);
+        }
     }
 }
