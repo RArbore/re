@@ -8,6 +8,6 @@ pub enum Expr<'a> {
     BoolLit(bool),
     FixedLit(i64),
     FloatLit(f64),
-    Use(IdentifierId, &'a [ExprId<'a>]),
-    Def(IdentifierId, &'a [IdentifierId], ExprId<'a>),
+    Apply(IdentifierId, &'a [ExprId<'a>]),
+    Abstract(IdentifierId, &'a [IdentifierId], ExprId<'a>),
 }

@@ -25,11 +25,6 @@ pub struct Arena<'a> {
     arena: ArenaInternal<'a>,
 }
 
-pub struct BrandedArena<'a, T> {
-    arena: ArenaInternal<'a>,
-    _phantom: PhantomData<T>,
-}
-
 #[derive(Clone, Copy, Debug)]
 pub struct BrandedArenaId<T> {
     id: u32,
@@ -83,6 +78,7 @@ impl<'a> ArenaInternal<'a> {
         }
     }
 
+    #[allow(dead_code)]
     fn realign(self: ArenaInternal<'a>, align: usize) -> ArenaInternal<'a> {
         let offset = self.offset.load(Ordering::Relaxed);
         let align_offset = unsafe { self.ptr.add(offset) }.align_offset(align);
@@ -172,16 +168,6 @@ impl<'a> Arena<'a> {
         }
     }
 
-    pub fn brand<T>(self) -> BrandedArena<'a, T> {
-        const {
-            assert!(!needs_drop::<T>());
-        }
-        BrandedArena {
-            arena: self.arena.realign(align_of::<T>()),
-            _phantom: PhantomData,
-        }
-    }
-
     pub fn new<'b, T>(&'b self, x: T) -> &'b mut T {
         const {
             assert!(!needs_drop::<T>());
@@ -220,45 +206,9 @@ impl<'a> Arena<'a> {
             &mut *ptr::from_raw_parts_mut(ptr, metadata(x))
         }
     }
-}
 
-impl<'a, T> BrandedArena<'a, T> {
-    pub fn new_backed<BT, const B: usize>(backing: &'a mut [BT; B]) -> BrandedArena<'a, T> {
-        const {
-            assert!(!needs_drop::<T>());
-        }
-        BrandedArena {
-            arena: ArenaInternal::new_backed(backing, align_of::<T>()),
-            _phantom: PhantomData,
-        }
-    }
-
-    pub fn new_virt() -> BrandedArena<'a, T> {
-        const {
-            assert!(!needs_drop::<T>());
-        }
-        BrandedArena {
-            arena: ArenaInternal::new_virt(align_of::<T>()),
-            _phantom: PhantomData,
-        }
-    }
-
-    pub fn rebrand<NewT>(self) -> BrandedArena<'a, NewT> {
-        const {
-            assert!(!needs_drop::<NewT>());
-        }
-        BrandedArena {
-            arena: self.arena.realign(align_of::<NewT>()),
-            _phantom: PhantomData,
-        }
-    }
-
-    pub fn unbrand(self) -> Arena<'a> {
-        Arena { arena: self.arena }
-    }
-
-    pub fn new<'b>(&'b self, x: T) -> BrandedArenaId<T> {
-        let offset = self.arena.alloc(size_of::<T>(), None);
+    pub fn alloc<'b, T>(&'b self, x: T) -> BrandedArenaId<T> {
+        let offset = self.arena.alloc(size_of::<T>(), Some(align_of::<T>()));
         unsafe {
             let ptr = self.arena.ptr.add(offset) as *mut T;
             *ptr = x;
@@ -269,13 +219,13 @@ impl<'a, T> BrandedArena<'a, T> {
         }
     }
 
-    pub fn get<'b>(&'b self, id: BrandedArenaId<T>) -> &'b T {
+    pub fn get<'b, T>(&'b self, id: BrandedArenaId<T>) -> &'b T {
         let offset = id.id as usize * size_of::<T>();
         assert!(offset + size_of::<T>() <= self.arena.max);
         unsafe { &*(self.arena.ptr.add(offset) as *mut T) }
     }
 
-    pub fn get_mut<'b>(&'b mut self, id: BrandedArenaId<T>) -> &'b mut T {
+    pub fn get_mut<'b, T>(&'b mut self, id: BrandedArenaId<T>) -> &'b mut T {
         let offset = id.id as usize * size_of::<T>();
         assert!(offset + size_of::<T>() <= self.arena.max);
         unsafe { &mut *(self.arena.ptr.add(offset) as *mut T) }
@@ -284,8 +234,6 @@ impl<'a, T> BrandedArena<'a, T> {
 
 unsafe impl Sync for Arena<'_> {}
 unsafe impl Send for Arena<'_> {}
-unsafe impl<T> Sync for BrandedArena<'_, T> {}
-unsafe impl<T> Send for BrandedArena<'_, T> {}
 
 #[cfg(test)]
 mod tests {
@@ -397,11 +345,11 @@ mod tests {
     #[test]
     fn branded_backed_arena() {
         let mut buf: [u64; 1] = [0; 1];
-        let mut arena = BrandedArena::<i16>::new_backed(&mut buf);
-        let x = arena.new(42);
-        let y = arena.new(43);
-        let z = arena.new(44);
-        let w = arena.new(45);
+        let mut arena = Arena::new_backed(&mut buf);
+        let x = arena.alloc::<i16>(42);
+        let y = arena.alloc::<i16>(43);
+        let z = arena.alloc::<i16>(44);
+        let w = arena.alloc::<i16>(45);
         assert_eq!(*arena.get(x), 42);
         assert_eq!(*arena.get(y), 43);
         assert_eq!(*arena.get(z), 44);
@@ -416,10 +364,10 @@ mod tests {
 
     #[test]
     fn branded_virt_arena() {
-        let mut arena = BrandedArena::<i128>::new_virt();
+        let mut arena = Arena::new_virt();
         let mut ids = vec![];
         for _ in 0..(1 << 20) {
-            ids.push(arena.new(42));
+            ids.push(arena.alloc::<i128>(42));
         }
         for i in 0..(1 << 20) {
             assert_eq!(*arena.get(ids[i]), 42);
@@ -437,11 +385,8 @@ mod tests {
         let mut buf: [u64; 1] = [0; 1];
         let arena = Arena::new_backed(&mut buf);
         arena.new::<i8>(0);
-        let arena = arena.brand::<i16>();
-        arena.new(0);
-        let arena = arena.rebrand::<i8>();
-        arena.new(0);
-        let arena = arena.unbrand();
+        arena.alloc::<i16>(0);
+        arena.alloc::<i8>(0);
         arena.new::<i8>(0);
         arena.new::<i8>(0);
         arena.new::<i8>(0);
