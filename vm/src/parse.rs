@@ -1,5 +1,7 @@
-use arena::Arena;
+use arena::{Arena, BrandedArena};
 
-pub fn parse(text: &str, arena: &Arena) {
+use crate::expr::Expr;
 
+pub fn parse<'a>(text: &str, arena: Arena<'a>) -> BrandedArena<'a, Expr<'a>> {
+    todo!()
 }

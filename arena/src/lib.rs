@@ -1,9 +1,11 @@
-#![feature(negative_impls)]
+#![feature(clone_to_uninit, negative_impls, ptr_metadata)]
 
+use core::clone::CloneToUninit;
 use core::marker::PhantomData;
-use core::mem::{align_of, needs_drop, size_of};
-use core::ptr::null_mut;
-use core::slice::from_raw_parts_mut;
+use core::mem::{align_of, align_of_val, needs_drop, size_of, size_of_val};
+use core::ptr;
+use core::ptr::{metadata, null_mut};
+use core::slice;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use libc::{
     MAP_ANONYMOUS, MAP_FAILED, MAP_PRIVATE, PROT_NONE, PROT_READ, PROT_WRITE, mmap, mprotect,
@@ -96,7 +98,9 @@ impl<'a> ArenaInternal<'a> {
         #[allow(unused_assignments)]
         let mut begin_offset = 0;
         let mut old_offset = self.offset.load(Ordering::Relaxed);
-        if let Some(align) = align {
+        if let Some(align) = align
+            && align > 1
+        {
             loop {
                 let align_offset = unsafe { self.ptr.add(old_offset) }.align_offset(align);
                 begin_offset = old_offset + align_offset;
@@ -202,7 +206,18 @@ impl<'a> Arena<'a> {
             for i in 0..count {
                 *ptr.add(i) = x.clone();
             }
-            from_raw_parts_mut(ptr, count)
+            slice::from_raw_parts_mut(ptr, count)
+        }
+    }
+
+    pub fn new_ref<'b, T: CloneToUninit + ?Sized>(&'b self, x: &T) -> &'b mut T {
+        let size = size_of_val(x);
+        let align = align_of_val(x);
+        let offset = self.arena.alloc(size, Some(align));
+        unsafe {
+            let ptr = self.arena.ptr.add(offset);
+            x.clone_to_uninit(ptr);
+            &mut *ptr::from_raw_parts_mut(ptr, metadata(x))
         }
     }
 }
