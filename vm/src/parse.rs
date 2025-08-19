@@ -1,6 +1,6 @@
 use arena::{Arena, BrandedArenaId};
 
-use crate::expr::{Expr, ExprId};
+use crate::expr::{AbstractExpr, AbstractExprId, ParseExpr, ParseExprId};
 use crate::interner::{IdentifierId, StringInterner};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -59,9 +59,9 @@ pub fn parse<'a, 'b>(
     text: &str,
     arena: &'b mut Arena<'a>,
     interner: &mut StringInterner,
-) -> &'a [ExprId<'a>] {
+) -> &'a [ParseExprId<'a>] {
     let tokens = lex(text, arena, interner);
-    let mut expr_stack: Vec<ExprId<'a>> = vec![];
+    let mut expr_stack: Vec<ParseExprId<'a>> = vec![];
     let mut paren_stack = vec![];
 
     let mut tokens = tokens.into_iter().peekable();
@@ -77,21 +77,21 @@ pub fn parse<'a, 'b>(
                         pf(*expr);
                     }
                 });
-                let list_expr = arena.alloc(Expr::List(exprs));
+                let list_expr = arena.alloc(ParseExpr::List(exprs));
                 expr_stack.truncate(old_len);
                 expr_stack.push(list_expr);
             }
             Token::Identifier(id) => {
-                expr_stack.push(arena.alloc(Expr::Identifier(*id)));
+                expr_stack.push(arena.alloc(ParseExpr::Identifier(*id)));
             }
             Token::BoolLit(lit) => {
-                expr_stack.push(arena.alloc(Expr::BoolLit(*lit)));
+                expr_stack.push(arena.alloc(ParseExpr::BoolLit(*lit)));
             }
             Token::FixedLit(lit) => {
-                expr_stack.push(arena.alloc(Expr::FixedLit(*lit)));
+                expr_stack.push(arena.alloc(ParseExpr::FixedLit(*lit)));
             }
             Token::FloatLit(lit) => {
-                expr_stack.push(arena.alloc(Expr::FloatLit(*lit)));
+                expr_stack.push(arena.alloc(ParseExpr::FloatLit(*lit)));
             }
         }
     }
@@ -100,19 +100,198 @@ pub fn parse<'a, 'b>(
     arena.collect(expr_stack.into_iter())
 }
 
+fn check_expr<'a, 'b>(
+    parsed: ParseExprId<'a>,
+    arena: &'b mut Arena<'a>,
+    interner: &mut StringInterner,
+    dot_iden: IdentifierId,
+    let_iden: IdentifierId,
+    def_iden: IdentifierId,
+    question_iden: IdentifierId,
+) -> AbstractExprId<'a> {
+    match arena.get(parsed) {
+        ParseExpr::BoolLit(lit) => arena.alloc(AbstractExpr::BoolLit(*lit)),
+        ParseExpr::FixedLit(lit) => arena.alloc(AbstractExpr::FixedLit(*lit)),
+        ParseExpr::FloatLit(lit) => arena.alloc(AbstractExpr::FloatLit(*lit)),
+        ParseExpr::Identifier(id) => {
+            assert_ne!(*id, dot_iden);
+            assert_ne!(*id, let_iden);
+            assert_ne!(*id, def_iden);
+            assert_ne!(*id, question_iden);
+            arena.alloc(AbstractExpr::UseIdentifier(*id))
+        }
+        ParseExpr::List(exprs) => {
+            assert!(!exprs.is_empty());
+            if *arena.get(exprs[0]) == ParseExpr::Identifier(let_iden) {
+                assert_eq!(exprs.len(), 4);
+                let ParseExpr::Identifier(binder) = arena.get(exprs[1]) else {
+                    panic!()
+                };
+                let binding = check_expr(
+                    exprs[2],
+                    arena,
+                    interner,
+                    dot_iden,
+                    let_iden,
+                    def_iden,
+                    question_iden,
+                );
+                let in_expr = check_expr(
+                    exprs[3],
+                    arena,
+                    interner,
+                    dot_iden,
+                    let_iden,
+                    def_iden,
+                    question_iden,
+                );
+                arena.alloc(AbstractExpr::Let(*binder, binding, in_expr))
+            } else if *arena.get(exprs[0]) == ParseExpr::Identifier(def_iden) {
+                assert_eq!(exprs.len(), 3);
+                let ParseExpr::Identifier(binder) = arena.get(exprs[1]) else {
+                    panic!()
+                };
+                let binding = check_expr(
+                    exprs[2],
+                    arena,
+                    interner,
+                    dot_iden,
+                    let_iden,
+                    def_iden,
+                    question_iden,
+                );
+                arena.alloc(AbstractExpr::Define(*binder, binding))
+            } else if *arena.get(exprs[0]) == ParseExpr::Identifier(question_iden) {
+                assert_eq!(exprs.len(), 4);
+                let cond_expr = check_expr(
+                    exprs[1],
+                    arena,
+                    interner,
+                    dot_iden,
+                    let_iden,
+                    def_iden,
+                    question_iden,
+                );
+                let true_expr = check_expr(
+                    exprs[2],
+                    arena,
+                    interner,
+                    dot_iden,
+                    let_iden,
+                    def_iden,
+                    question_iden,
+                );
+                let false_expr = check_expr(
+                    exprs[3],
+                    arena,
+                    interner,
+                    dot_iden,
+                    let_iden,
+                    def_iden,
+                    question_iden,
+                );
+                arena.alloc(AbstractExpr::IfElse(cond_expr, true_expr, false_expr))
+            } else if exprs.len() >= 2
+                && *arena.get(exprs[exprs.len() - 2]) == ParseExpr::Identifier(dot_iden)
+            {
+                let params: Vec<_> = exprs[0..exprs.len() - 2]
+                    .into_iter()
+                    .map(|expr| {
+                        let ParseExpr::Identifier(param) = arena.get(*expr) else {
+                            panic!();
+                        };
+                        *param
+                    })
+                    .collect();
+                let params = arena.collect(params.into_iter());
+                let body_expr = check_expr(
+                    *exprs.last().unwrap(),
+                    arena,
+                    interner,
+                    dot_iden,
+                    let_iden,
+                    def_iden,
+                    question_iden,
+                );
+                arena.alloc(AbstractExpr::Abstract(params, body_expr))
+            } else if exprs.len() == 1 {
+                check_expr(
+                    exprs[0],
+                    arena,
+                    interner,
+                    dot_iden,
+                    let_iden,
+                    def_iden,
+                    question_iden,
+                )
+            } else {
+                let func_expr = check_expr(
+                    exprs[0],
+                    arena,
+                    interner,
+                    dot_iden,
+                    let_iden,
+                    def_iden,
+                    question_iden,
+                );
+                let arg_exprs: Vec<_> = exprs[1..]
+                    .into_iter()
+                    .map(|parsed| {
+                        check_expr(
+                            *parsed,
+                            arena,
+                            interner,
+                            dot_iden,
+                            let_iden,
+                            def_iden,
+                            question_iden,
+                        )
+                    })
+                    .collect();
+                let arg_exprs = arena.collect(arg_exprs.into_iter());
+                arena.alloc(AbstractExpr::Apply(func_expr, arg_exprs))
+            }
+        }
+    }
+}
+
+pub fn check<'a, 'b>(
+    parsed: &'a [ParseExprId<'a>],
+    arena: &'b mut Arena<'a>,
+    interner: &mut StringInterner,
+) -> &'a [AbstractExprId<'a>] {
+    let dot_iden = interner.intern(".");
+    let let_iden = interner.intern("let");
+    let def_iden = interner.intern("def");
+    let question_iden = interner.intern("?");
+    let mut abstract_exprs = vec![];
+    for id in parsed {
+        abstract_exprs.push(check_expr(
+            *id,
+            arena,
+            interner,
+            dot_iden,
+            let_iden,
+            def_iden,
+            question_iden,
+        ));
+    }
+    arena.collect(abstract_exprs.into_iter())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::expr::dump_exprs;
+    use crate::expr::{dump_abstract_exprs, dump_parse_exprs};
 
     #[test]
     fn simple_lex() {
-        let mut buf = [0u64; 38];
+        let mut buf = [0u64; 44];
         let mut arena = Arena::new_backed(&mut buf);
-        let mut string_buf = [0u8; 13];
+        let mut string_buf = [0u8; 14];
         let string_arena = Arena::new_backed(&mut string_buf);
         let mut interner = StringInterner::new(&string_arena);
-        let text = "(def fn x y (+ x y)) (print (fn 42 24))";
+        let text = "(def fn (x y . (+ x y))) (print (fn 42 24))";
         let tokens = lex(text, &mut arena, &mut interner);
         assert_eq!(
             tokens,
@@ -120,12 +299,15 @@ mod tests {
                 Token::LeftParen,
                 Token::Identifier(interner.intern("def")),
                 Token::Identifier(interner.intern("fn")),
+                Token::LeftParen,
                 Token::Identifier(interner.intern("x")),
                 Token::Identifier(interner.intern("y")),
+                Token::Identifier(interner.intern(".")),
                 Token::LeftParen,
                 Token::Identifier(interner.intern("+")),
                 Token::Identifier(interner.intern("x")),
                 Token::Identifier(interner.intern("y")),
+                Token::RightParen,
                 Token::RightParen,
                 Token::RightParen,
                 Token::LeftParen,
@@ -144,12 +326,26 @@ mod tests {
     fn simple_parse() {
         let mut buf = [0u64; 200];
         let mut arena = Arena::new_backed(&mut buf);
-        let mut string_buf = [0u8; 13];
+        let mut string_buf = [0u8; 14];
         let string_arena = Arena::new_backed(&mut string_buf);
         let mut interner = StringInterner::new(&string_arena);
-        let text = "(def fn x y (+ x y)) (print (fn 42 24))";
-        let exprs = parse(text, &mut arena, &mut interner);
-        let dumped_text = dump_exprs(exprs, &arena, &interner);
+        let text = "(def fn (x y . (+ x y))) (print (fn 42 24))";
+        let parse_exprs = parse(text, &mut arena, &mut interner);
+        let dumped_text = dump_parse_exprs(parse_exprs, &arena, &interner);
+        assert_eq!(text, dumped_text);
+    }
+
+    #[test]
+    fn simple_check() {
+        let mut buf = [0u64; 200];
+        let mut arena = Arena::new_backed(&mut buf);
+        let mut string_buf = [0u8; 20];
+        let string_arena = Arena::new_backed(&mut string_buf);
+        let mut interner = StringInterner::new(&string_arena);
+        let text = "(def fn (x y . (+ x y))) (print (fn 42 24))";
+        let parse_exprs = parse(text, &mut arena, &mut interner);
+        let abstract_exprs = check(parse_exprs, &mut arena, &mut interner);
+        let dumped_text = dump_abstract_exprs(abstract_exprs, &arena, &interner);
         assert_eq!(text, dumped_text);
     }
 }
