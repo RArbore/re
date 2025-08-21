@@ -3,7 +3,13 @@ use std::collections::HashMap;
 use arena::Arena;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct IdentifierId(usize);
+pub struct IdentifierId(u32);
+
+impl IdentifierId {
+    pub fn idx(&self) -> usize {
+        self.0 as usize
+    }
+}
 
 pub struct StringInterner<'a, 'b> {
     str_to_id: HashMap<&'a str, IdentifierId>,
@@ -25,7 +31,7 @@ impl<'a, 'b> StringInterner<'a, 'b> {
             *id
         } else {
             let in_arena = self.arena.new_ref(string);
-            let id = IdentifierId(self.id_to_str.len());
+            let id = IdentifierId(self.id_to_str.len().try_into().unwrap());
             self.str_to_id.insert(in_arena, id);
             self.id_to_str.push(in_arena);
             id
@@ -33,7 +39,11 @@ impl<'a, 'b> StringInterner<'a, 'b> {
     }
 
     pub fn get(&self, id: IdentifierId) -> &'a str {
-        self.id_to_str[id.0]
+        self.id_to_str[id.0 as usize]
+    }
+
+    pub fn num_idens(&self) -> usize {
+        self.id_to_str.len()
     }
 }
 

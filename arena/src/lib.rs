@@ -198,6 +198,9 @@ impl<'a> Arena<'a> {
     }
 
     pub fn new_ref<'b, T: CloneToUninit + ?Sized>(&'b self, x: &T) -> &'a mut T {
+        const {
+            assert!(!needs_drop::<T>());
+        }
         let size = size_of_val(x);
         let align = align_of_val(x);
         let offset = self.arena.alloc(size, Some(align));
@@ -209,6 +212,9 @@ impl<'a> Arena<'a> {
     }
 
     pub fn alloc<'b, T>(&'b self, x: T) -> BrandedArenaId<T> {
+        const {
+            assert!(!needs_drop::<T>());
+        }
         let offset = self.arena.alloc(size_of::<T>(), Some(align_of::<T>()));
         unsafe {
             let ptr = self.arena.ptr.add(offset) as *mut T;
@@ -224,6 +230,9 @@ impl<'a> Arena<'a> {
     where
         I: Iterator<Item = T>,
     {
+        const {
+            assert!(!needs_drop::<T>());
+        }
         self.arena.realign(align_of::<T>());
         let old_offset = self.arena.offset.load(Ordering::Relaxed);
         let mut count = 0;
@@ -240,6 +249,9 @@ impl<'a> Arena<'a> {
     where
         F: FnOnce(&mut dyn FnMut(T) -> BrandedArenaId<T>),
     {
+        const {
+            assert!(!needs_drop::<T>());
+        }
         self.arena.realign(align_of::<T>());
         let old_offset = self.arena.offset.load(Ordering::Relaxed);
         let ptr = unsafe { self.arena.ptr.add(old_offset) } as *mut T;
@@ -247,7 +259,9 @@ impl<'a> Arena<'a> {
         let mut pf = |x| {
             self.arena.alloc(size_of::<T>(), None);
             unsafe { *ptr.add(count) = x };
-            let id = ((old_offset + count * size_of::<T>()) / align_of::<T>()).try_into().unwrap();
+            let id = ((old_offset + count * size_of::<T>()) / align_of::<T>())
+                .try_into()
+                .unwrap();
             count += 1;
             BrandedArenaId {
                 id,
