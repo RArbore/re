@@ -4,16 +4,23 @@ use core::mem::take;
 use arena::Arena;
 
 use crate::expr::{AbstractExpr, AbstractExprId};
-use crate::interner::StringInterner;
+use crate::interner::{IdentifierId, StringInterner};
 
 pub struct Env<'a> {
     iden_to_expr: Vec<Vec<AbstractExprId<'a>>>,
+
+    plus_id: IdentifierId,
+    minus_id: IdentifierId,
+    equals_equals_id: IdentifierId,
 }
 
 impl<'a> Env<'a> {
-    pub fn new(interner: &StringInterner) -> Self {
+    pub fn new(interner: &mut StringInterner) -> Self {
         Env {
             iden_to_expr: vec![vec![]; interner.num_idens()],
+            plus_id: interner.intern("+"),
+            minus_id: interner.intern("-"),
+            equals_equals_id: interner.intern("=="),
         }
     }
 
@@ -42,6 +49,10 @@ impl<'a> Env<'a> {
                         self.iden_to_expr[param_iden.idx()].pop();
                     }
                     new_body
+                } else if let AbstractExpr::UseIdentifier(func_name) = arena.get(new_func)
+                    && let Some(result) = self.try_builtin(arena, *func_name, *args)
+                {
+                    result
                 } else if new_func != *func {
                     arena.alloc(AbstractExpr::Apply(new_func, args))
                 } else {
@@ -90,6 +101,49 @@ impl<'a> Env<'a> {
             }
         }
     }
+
+    fn try_builtin(
+        &mut self,
+        arena: &mut Arena<'a>,
+        func: IdentifierId,
+        args: &'a [AbstractExprId<'a>],
+    ) -> Option<AbstractExprId<'a>> {
+        if func == self.equals_equals_id && args.len() == 2 {
+            let lhs = self.eval(arena, args[0]);
+            let rhs = self.eval(arena, args[1]);
+            Some(arena.alloc(AbstractExpr::BoolLit(arena.get(lhs) == arena.get(rhs))))
+        } else if func == self.plus_id && args.len() == 2 {
+            let lhs = self.eval(arena, args[0]);
+            let rhs = self.eval(arena, args[1]);
+            if let (AbstractExpr::FixedLit(lhs), AbstractExpr::FixedLit(rhs)) =
+                (arena.get(lhs), arena.get(rhs))
+            {
+                Some(arena.alloc(AbstractExpr::FixedLit(lhs + rhs)))
+            } else if let (AbstractExpr::FloatLit(lhs), AbstractExpr::FloatLit(rhs)) =
+                (arena.get(lhs), arena.get(rhs))
+            {
+                Some(arena.alloc(AbstractExpr::FloatLit(lhs + rhs)))
+            } else {
+                None
+            }
+        } else if func == self.minus_id && args.len() == 2 {
+            let lhs = self.eval(arena, args[0]);
+            let rhs = self.eval(arena, args[1]);
+            if let (AbstractExpr::FixedLit(lhs), AbstractExpr::FixedLit(rhs)) =
+                (arena.get(lhs), arena.get(rhs))
+            {
+                Some(arena.alloc(AbstractExpr::FixedLit(lhs - rhs)))
+            } else if let (AbstractExpr::FloatLit(lhs), AbstractExpr::FloatLit(rhs)) =
+                (arena.get(lhs), arena.get(rhs))
+            {
+                Some(arena.alloc(AbstractExpr::FloatLit(lhs - rhs)))
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
 }
 
 #[cfg(test)]
@@ -100,20 +154,30 @@ mod tests {
 
     #[test]
     fn simple_eval() {
-        let mut buf = [0u64; 400];
+        let mut buf = [0u64; 2000];
         let mut arena = Arena::new_backed(&mut buf);
         let mut string_buf = [0u8; 20];
         let string_arena = Arena::new_backed(&mut string_buf);
         let mut interner = StringInterner::new(&string_arena);
 
-        let programs = &["((x y . x) 42 24)", "(let x 73 x)", "(? true 3 5)", "(let x false (? x x 7))", "(def x 42.3) x", "(def f (x . (? x 0.1 0.9))) (f false)"];
-        let evals = &["42", "73", "3", "7", "42.3", "0.9"];
+        let programs = &[
+            "((x y . x) 42 24)",
+            "(let x 73 x)",
+            "(? true 3 5)",
+            "(let x false (? x x 7))",
+            "(def x 42.3) x",
+            "(def f (x . (? x 0.1 0.9))) (f false)",
+            "(+ 4 3)",
+            "(- 4 3)",
+            "(== 4 3)",
+        ];
+        let evals = &["42", "73", "3", "7", "42.3", "0.9", "7", "1", "false"];
 
         for (text, correct) in zip(programs, evals) {
             let parse_exprs = parse(text, &mut arena, &mut interner).unwrap();
             let abstract_exprs = check(parse_exprs, &mut arena, &mut interner).unwrap();
             assert!(!abstract_exprs.is_empty());
-            let mut env = Env::new(&interner);
+            let mut env = Env::new(&mut interner);
             let mut evaled = env.eval(&mut arena, abstract_exprs[0]);
             for expr in &abstract_exprs[1..] {
                 evaled = env.eval(&mut arena, *expr);

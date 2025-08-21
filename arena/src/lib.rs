@@ -1,6 +1,7 @@
 #![feature(clone_to_uninit, negative_impls, ptr_metadata)]
 
 use core::clone::CloneToUninit;
+use core::hash::{Hash, Hasher};
 use core::marker::PhantomData;
 use core::mem::{align_of, align_of_val, needs_drop, size_of, size_of_val};
 use core::ptr;
@@ -27,10 +28,24 @@ pub struct Arena<'a> {
     arena: ArenaInternal<'a>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug)]
 pub struct BrandedArenaId<T> {
     id: u32,
     _phantom: PhantomData<T>,
+}
+
+impl<T> PartialEq for BrandedArenaId<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+impl<T> Eq for BrandedArenaId<T> {}
+
+impl<T> Hash for BrandedArenaId<T> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
+    }
 }
 
 impl<'a> ArenaInternal<'a> {
