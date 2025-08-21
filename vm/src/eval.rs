@@ -11,7 +11,10 @@ pub struct Env<'a> {
 
     plus_id: IdentifierId,
     minus_id: IdentifierId,
+    multiply_id: IdentifierId,
+    divide_id: IdentifierId,
     equals_equals_id: IdentifierId,
+    not_equals_id: IdentifierId,
 }
 
 impl<'a> Env<'a> {
@@ -20,7 +23,10 @@ impl<'a> Env<'a> {
             iden_to_expr: vec![vec![]; interner.num_idens()],
             plus_id: interner.intern("+"),
             minus_id: interner.intern("-"),
+            multiply_id: interner.intern("*"),
+            divide_id: interner.intern("/"),
             equals_equals_id: interner.intern("=="),
+            not_equals_id: interner.intern("!="),
         }
     }
 
@@ -108,37 +114,83 @@ impl<'a> Env<'a> {
         func: IdentifierId,
         args: &'a [AbstractExprId<'a>],
     ) -> Option<AbstractExprId<'a>> {
-        if func == self.equals_equals_id && args.len() == 2 {
+        if func == self.plus_id && args.len() == 2 {
             let lhs = self.eval(arena, args[0]);
             let rhs = self.eval(arena, args[1]);
-            Some(arena.alloc(AbstractExpr::BoolLit(arena.get(lhs) == arena.get(rhs))))
-        } else if func == self.plus_id && args.len() == 2 {
-            let lhs = self.eval(arena, args[0]);
-            let rhs = self.eval(arena, args[1]);
-            if let (AbstractExpr::FixedLit(lhs), AbstractExpr::FixedLit(rhs)) =
-                (arena.get(lhs), arena.get(rhs))
-            {
-                Some(arena.alloc(AbstractExpr::FixedLit(lhs + rhs)))
-            } else if let (AbstractExpr::FloatLit(lhs), AbstractExpr::FloatLit(rhs)) =
-                (arena.get(lhs), arena.get(rhs))
-            {
-                Some(arena.alloc(AbstractExpr::FloatLit(lhs + rhs)))
-            } else {
-                None
+            match (arena.get(lhs), arena.get(rhs)) {
+                (AbstractExpr::FixedLit(lhs), AbstractExpr::FixedLit(rhs)) => {
+                    Some(arena.alloc(AbstractExpr::FixedLit(lhs + rhs)))
+                }
+                (AbstractExpr::FloatLit(lhs), AbstractExpr::FloatLit(rhs)) => {
+                    Some(arena.alloc(AbstractExpr::FloatLit(lhs + rhs)))
+                }
+                _ => None,
             }
         } else if func == self.minus_id && args.len() == 2 {
             let lhs = self.eval(arena, args[0]);
             let rhs = self.eval(arena, args[1]);
-            if let (AbstractExpr::FixedLit(lhs), AbstractExpr::FixedLit(rhs)) =
-                (arena.get(lhs), arena.get(rhs))
-            {
-                Some(arena.alloc(AbstractExpr::FixedLit(lhs - rhs)))
-            } else if let (AbstractExpr::FloatLit(lhs), AbstractExpr::FloatLit(rhs)) =
-                (arena.get(lhs), arena.get(rhs))
-            {
-                Some(arena.alloc(AbstractExpr::FloatLit(lhs - rhs)))
-            } else {
-                None
+            match (arena.get(lhs), arena.get(rhs)) {
+                (AbstractExpr::FixedLit(lhs), AbstractExpr::FixedLit(rhs)) => {
+                    Some(arena.alloc(AbstractExpr::FixedLit(lhs - rhs)))
+                }
+                (AbstractExpr::FloatLit(lhs), AbstractExpr::FloatLit(rhs)) => {
+                    Some(arena.alloc(AbstractExpr::FloatLit(lhs - rhs)))
+                }
+                _ => None,
+            }
+        } else if func == self.multiply_id && args.len() == 2 {
+            let lhs = self.eval(arena, args[0]);
+            let rhs = self.eval(arena, args[1]);
+            match (arena.get(lhs), arena.get(rhs)) {
+                (AbstractExpr::FixedLit(lhs), AbstractExpr::FixedLit(rhs)) => {
+                    Some(arena.alloc(AbstractExpr::FixedLit(lhs * rhs)))
+                }
+                (AbstractExpr::FloatLit(lhs), AbstractExpr::FloatLit(rhs)) => {
+                    Some(arena.alloc(AbstractExpr::FloatLit(lhs * rhs)))
+                }
+                _ => None,
+            }
+        } else if func == self.divide_id && args.len() == 2 {
+            let lhs = self.eval(arena, args[0]);
+            let rhs = self.eval(arena, args[1]);
+            match (arena.get(lhs), arena.get(rhs)) {
+                (AbstractExpr::FixedLit(lhs), AbstractExpr::FixedLit(rhs)) => {
+                    Some(arena.alloc(AbstractExpr::FixedLit(lhs / rhs)))
+                }
+                (AbstractExpr::FloatLit(lhs), AbstractExpr::FloatLit(rhs)) => {
+                    Some(arena.alloc(AbstractExpr::FloatLit(lhs / rhs)))
+                }
+                _ => None,
+            }
+        } else if func == self.equals_equals_id && args.len() == 2 {
+            let lhs = self.eval(arena, args[0]);
+            let rhs = self.eval(arena, args[1]);
+            match (arena.get(lhs), arena.get(rhs)) {
+                (AbstractExpr::BoolLit(lhs), AbstractExpr::BoolLit(rhs)) => {
+                    Some(arena.alloc(AbstractExpr::BoolLit(lhs == rhs)))
+                }
+                (AbstractExpr::FixedLit(lhs), AbstractExpr::FixedLit(rhs)) => {
+                    Some(arena.alloc(AbstractExpr::BoolLit(lhs == rhs)))
+                }
+                (AbstractExpr::FloatLit(lhs), AbstractExpr::FloatLit(rhs)) => {
+                    Some(arena.alloc(AbstractExpr::BoolLit(lhs == rhs)))
+                }
+                _ => None,
+            }
+        } else if func == self.not_equals_id && args.len() == 2 {
+            let lhs = self.eval(arena, args[0]);
+            let rhs = self.eval(arena, args[1]);
+            match (arena.get(lhs), arena.get(rhs)) {
+                (AbstractExpr::BoolLit(lhs), AbstractExpr::BoolLit(rhs)) => {
+                    Some(arena.alloc(AbstractExpr::BoolLit(lhs != rhs)))
+                }
+                (AbstractExpr::FixedLit(lhs), AbstractExpr::FixedLit(rhs)) => {
+                    Some(arena.alloc(AbstractExpr::BoolLit(lhs != rhs)))
+                }
+                (AbstractExpr::FloatLit(lhs), AbstractExpr::FloatLit(rhs)) => {
+                    Some(arena.alloc(AbstractExpr::BoolLit(lhs != rhs)))
+                }
+                _ => None,
             }
         } else {
             None
@@ -169,9 +221,14 @@ mod tests {
             "(def f (x . (? x 0.1 0.9))) (f false)",
             "(+ 4 3)",
             "(- 4 3)",
-            "(== 4 3)",
+            "(== 4.3 3.0)",
+            "(== 3 3)",
+            "(def f (x . (? (== x 0) 1 (* x (f (- x 1)))))) (f 7)",
+            "(let f (x . (? (== x 0) 0 (+ x (f (- x 1))))) (f 7))",
         ];
-        let evals = &["42", "73", "3", "7", "42.3", "0.9", "7", "1", "false"];
+        let evals = &[
+            "42", "73", "3", "7", "42.3", "0.9", "7", "1", "false", "true", "5040", "28",
+        ];
 
         for (text, correct) in zip(programs, evals) {
             let parse_exprs = parse(text, &mut arena, &mut interner).unwrap();
