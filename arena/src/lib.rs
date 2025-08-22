@@ -267,7 +267,9 @@ impl<'a> Arena<'a> {
         const {
             assert!(!needs_drop::<T>());
         }
-        let begin_offset = self.arena.alloc(iter.len() * size_of::<T>(), Some(align_of::<T>()));
+        let begin_offset = self
+            .arena
+            .alloc(iter.len() * size_of::<T>(), Some(align_of::<T>()));
         let mut count = 0;
         let ptr = unsafe { self.arena.ptr.add(begin_offset) } as *mut T;
         for x in iter {
@@ -333,6 +335,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn create_virt_arena() {
         let _arena1 = Arena::new_virt();
         let _arena2 = Arena::new_virt();
@@ -369,6 +372,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn alloc_virt_arena() {
         #[derive(Default, Clone)]
         struct LargeType {
@@ -388,6 +392,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn alloc_virt_arena_multiple() {
         let arena1 = Arena::new_virt();
         let arena2 = Arena::new_virt();
@@ -414,6 +419,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn modify_virt_arena() {
         let arena = Arena::new_virt();
         let mut refs = vec![];
@@ -448,6 +454,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn branded_virt_arena() {
         let mut arena = Arena::new_virt();
         let mut ids = vec![];
