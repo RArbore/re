@@ -77,6 +77,7 @@ pub enum AbstractExpr<'a> {
     Let(IdentifierId, AbstractExprId<'a>, AbstractExprId<'a>),
     Define(IdentifierId, AbstractExprId<'a>),
     IfElse(AbstractExprId<'a>, AbstractExprId<'a>, AbstractExprId<'a>),
+    Do(&'a [AbstractExprId<'a>]),
 }
 
 impl<'a> AbstractExpr<'a> {
@@ -160,6 +161,14 @@ fn dump_abstract_expr<'a, 'b>(
             dump_abstract_expr(s, *false_expr, arena, interner);
             *s += ")";
         }
+        AbstractExpr::Do(steps) => {
+            *s += "(do";
+            for expr in *steps {
+                *s += " ";
+                dump_abstract_expr(s, *expr, arena, interner);
+            }
+            *s += ")";
+        }
     }
 }
 
@@ -185,6 +194,7 @@ pub enum CompileError {
     TooFewRightParentheses,
     KeywordCantBeIdentifier(IdentifierId),
     EmptyList,
+    MalformedDo,
     MalformedLet,
     MalformedDef,
     MalformedIfElse,
@@ -283,176 +293,114 @@ pub fn parse<'a, 'b>(
     }
 }
 
-fn check_expr<'a, 'b>(
-    parsed: ParseExprId<'a>,
-    arena: &'b mut Arena<'a>,
-    interner: &mut StringInterner,
+struct Checker {
     dot_iden: IdentifierId,
     let_iden: IdentifierId,
     def_iden: IdentifierId,
     question_iden: IdentifierId,
-) -> Result<AbstractExprId<'a>, CompileError> {
-    let expr = match arena.get(parsed) {
-        ParseExpr::BoolLit(lit) => arena.alloc(AbstractExpr::BoolLit(*lit)),
-        ParseExpr::FixedLit(lit) => arena.alloc(AbstractExpr::FixedLit(*lit)),
-        ParseExpr::FloatLit(lit) => arena.alloc(AbstractExpr::FloatLit(*lit)),
-        ParseExpr::Identifier(id) => {
-            if *id == dot_iden {
-                return Err(CompileError::KeywordCantBeIdentifier(dot_iden));
-            }
-            if *id == let_iden {
-                return Err(CompileError::KeywordCantBeIdentifier(let_iden));
-            }
-            if *id == def_iden {
-                return Err(CompileError::KeywordCantBeIdentifier(def_iden));
-            }
-            if *id == question_iden {
-                return Err(CompileError::KeywordCantBeIdentifier(question_iden));
-            }
-            arena.alloc(AbstractExpr::UseIdentifier(*id))
-        }
-        ParseExpr::List(exprs) => {
-            if exprs.is_empty() {
-                return Err(CompileError::EmptyList);
-            }
-            if *arena.get(exprs[0]) == ParseExpr::Identifier(let_iden) {
-                if exprs.len() != 4 {
-                    return Err(CompileError::MalformedLet);
+    do_iden: IdentifierId,
+}
+
+impl Checker {
+    fn check_expr<'a, 'b>(
+        &self,
+        parsed: ParseExprId<'a>,
+        arena: &'b mut Arena<'a>,
+        interner: &mut StringInterner,
+    ) -> Result<AbstractExprId<'a>, CompileError> {
+        let expr = match arena.get(parsed) {
+            ParseExpr::BoolLit(lit) => arena.alloc(AbstractExpr::BoolLit(*lit)),
+            ParseExpr::FixedLit(lit) => arena.alloc(AbstractExpr::FixedLit(*lit)),
+            ParseExpr::FloatLit(lit) => arena.alloc(AbstractExpr::FloatLit(*lit)),
+            ParseExpr::Identifier(id) => {
+                if *id == self.dot_iden {
+                    return Err(CompileError::KeywordCantBeIdentifier(self.dot_iden));
                 }
-                let ParseExpr::Identifier(binder) = arena.get(exprs[1]) else {
-                    return Err(CompileError::MalformedLet);
-                };
-                let binding = check_expr(
-                    exprs[2],
-                    arena,
-                    interner,
-                    dot_iden,
-                    let_iden,
-                    def_iden,
-                    question_iden,
-                )?;
-                let in_expr = check_expr(
-                    exprs[3],
-                    arena,
-                    interner,
-                    dot_iden,
-                    let_iden,
-                    def_iden,
-                    question_iden,
-                )?;
-                arena.alloc(AbstractExpr::Let(*binder, binding, in_expr))
-            } else if *arena.get(exprs[0]) == ParseExpr::Identifier(def_iden) {
-                if exprs.len() != 3 {
-                    return Err(CompileError::MalformedDef);
+                if *id == self.let_iden {
+                    return Err(CompileError::KeywordCantBeIdentifier(self.let_iden));
                 }
-                let ParseExpr::Identifier(binder) = arena.get(exprs[1]) else {
-                    return Err(CompileError::MalformedDef);
-                };
-                let binding = check_expr(
-                    exprs[2],
-                    arena,
-                    interner,
-                    dot_iden,
-                    let_iden,
-                    def_iden,
-                    question_iden,
-                )?;
-                arena.alloc(AbstractExpr::Define(*binder, binding))
-            } else if *arena.get(exprs[0]) == ParseExpr::Identifier(question_iden) {
-                if exprs.len() != 4 {
-                    return Err(CompileError::MalformedIfElse);
+                if *id == self.def_iden {
+                    return Err(CompileError::KeywordCantBeIdentifier(self.def_iden));
                 }
-                let cond_expr = check_expr(
-                    exprs[1],
-                    arena,
-                    interner,
-                    dot_iden,
-                    let_iden,
-                    def_iden,
-                    question_iden,
-                )?;
-                let true_expr = check_expr(
-                    exprs[2],
-                    arena,
-                    interner,
-                    dot_iden,
-                    let_iden,
-                    def_iden,
-                    question_iden,
-                )?;
-                let false_expr = check_expr(
-                    exprs[3],
-                    arena,
-                    interner,
-                    dot_iden,
-                    let_iden,
-                    def_iden,
-                    question_iden,
-                )?;
-                arena.alloc(AbstractExpr::IfElse(cond_expr, true_expr, false_expr))
-            } else if exprs.len() >= 2
-                && *arena.get(exprs[exprs.len() - 2]) == ParseExpr::Identifier(dot_iden)
-            {
-                let params: Result<Vec<_>, _> = exprs[0..exprs.len() - 2]
-                    .into_iter()
-                    .map(|expr| {
-                        let ParseExpr::Identifier(param) = arena.get(*expr) else {
-                            return Err(CompileError::MalformedAbstract);
-                        };
-                        Ok(*param)
-                    })
-                    .collect();
-                let params = arena.collect(params?.into_iter());
-                let body_expr = check_expr(
-                    *exprs.last().unwrap(),
-                    arena,
-                    interner,
-                    dot_iden,
-                    let_iden,
-                    def_iden,
-                    question_iden,
-                )?;
-                arena.alloc(AbstractExpr::Abstract(params, body_expr))
-            } else if exprs.len() == 1 {
-                check_expr(
-                    exprs[0],
-                    arena,
-                    interner,
-                    dot_iden,
-                    let_iden,
-                    def_iden,
-                    question_iden,
-                )?
-            } else {
-                let func_expr = check_expr(
-                    exprs[0],
-                    arena,
-                    interner,
-                    dot_iden,
-                    let_iden,
-                    def_iden,
-                    question_iden,
-                )?;
-                let arg_exprs: Result<Vec<_>, _> = exprs[1..]
-                    .into_iter()
-                    .map(|parsed| {
-                        check_expr(
-                            *parsed,
-                            arena,
-                            interner,
-                            dot_iden,
-                            let_iden,
-                            def_iden,
-                            question_iden,
-                        )
-                    })
-                    .collect();
-                let arg_exprs = arena.collect(arg_exprs?.into_iter());
-                arena.alloc(AbstractExpr::Apply(func_expr, arg_exprs))
+                if *id == self.question_iden {
+                    return Err(CompileError::KeywordCantBeIdentifier(self.question_iden));
+                }
+                if *id == self.do_iden {
+                    return Err(CompileError::KeywordCantBeIdentifier(self.do_iden));
+                }
+                arena.alloc(AbstractExpr::UseIdentifier(*id))
             }
-        }
-    };
-    Ok(expr)
+            ParseExpr::List(exprs) => {
+                if exprs.is_empty() {
+                    return Err(CompileError::EmptyList);
+                }
+                if *arena.get(exprs[0]) == ParseExpr::Identifier(self.do_iden) {
+                    if exprs.len() == 1 {
+                        return Err(CompileError::MalformedDo);
+                    }
+                    let steps: Result<Vec<_>, _> = exprs[1..]
+                        .into_iter()
+                        .map(|expr| self.check_expr(*expr, arena, interner))
+                        .collect();
+                    let steps = arena.collect(steps?.into_iter());
+                    arena.alloc(AbstractExpr::Do(steps))
+                } else if *arena.get(exprs[0]) == ParseExpr::Identifier(self.let_iden) {
+                    if exprs.len() != 4 {
+                        return Err(CompileError::MalformedLet);
+                    }
+                    let ParseExpr::Identifier(binder) = arena.get(exprs[1]) else {
+                        return Err(CompileError::MalformedLet);
+                    };
+                    let binding = self.check_expr(exprs[2], arena, interner)?;
+                    let in_expr = self.check_expr(exprs[3], arena, interner)?;
+                    arena.alloc(AbstractExpr::Let(*binder, binding, in_expr))
+                } else if *arena.get(exprs[0]) == ParseExpr::Identifier(self.def_iden) {
+                    if exprs.len() != 3 {
+                        return Err(CompileError::MalformedDef);
+                    }
+                    let ParseExpr::Identifier(binder) = arena.get(exprs[1]) else {
+                        return Err(CompileError::MalformedDef);
+                    };
+                    let binding = self.check_expr(exprs[2], arena, interner)?;
+                    arena.alloc(AbstractExpr::Define(*binder, binding))
+                } else if *arena.get(exprs[0]) == ParseExpr::Identifier(self.question_iden) {
+                    if exprs.len() != 4 {
+                        return Err(CompileError::MalformedIfElse);
+                    }
+                    let cond_expr = self.check_expr(exprs[1], arena, interner)?;
+                    let true_expr = self.check_expr(exprs[2], arena, interner)?;
+                    let false_expr = self.check_expr(exprs[3], arena, interner)?;
+                    arena.alloc(AbstractExpr::IfElse(cond_expr, true_expr, false_expr))
+                } else if exprs.len() >= 2
+                    && *arena.get(exprs[exprs.len() - 2]) == ParseExpr::Identifier(self.dot_iden)
+                {
+                    let params: Result<Vec<_>, _> = exprs[0..exprs.len() - 2]
+                        .into_iter()
+                        .map(|expr| {
+                            let ParseExpr::Identifier(param) = arena.get(*expr) else {
+                                return Err(CompileError::MalformedAbstract);
+                            };
+                            Ok(*param)
+                        })
+                        .collect();
+                    let params = arena.collect(params?.into_iter());
+                    let body_expr = self.check_expr(*exprs.last().unwrap(), arena, interner)?;
+                    arena.alloc(AbstractExpr::Abstract(params, body_expr))
+                } else if exprs.len() == 1 {
+                    self.check_expr(exprs[0], arena, interner)?
+                } else {
+                    let func_expr = self.check_expr(exprs[0], arena, interner)?;
+                    let arg_exprs: Result<Vec<_>, _> = exprs[1..]
+                        .into_iter()
+                        .map(|parsed| self.check_expr(*parsed, arena, interner))
+                        .collect();
+                    let arg_exprs = arena.collect(arg_exprs?.into_iter());
+                    arena.alloc(AbstractExpr::Apply(func_expr, arg_exprs))
+                }
+            }
+        };
+        Ok(expr)
+    }
 }
 
 pub fn check<'a, 'b>(
@@ -460,21 +408,16 @@ pub fn check<'a, 'b>(
     arena: &'b mut Arena<'a>,
     interner: &mut StringInterner,
 ) -> Result<&'a [AbstractExprId<'a>], CompileError> {
-    let dot_iden = interner.intern(".");
-    let let_iden = interner.intern("let");
-    let def_iden = interner.intern("def");
-    let question_iden = interner.intern("?");
+    let checker = Checker {
+        dot_iden: interner.intern("."),
+        let_iden: interner.intern("let"),
+        def_iden: interner.intern("def"),
+        question_iden: interner.intern("?"),
+        do_iden: interner.intern("do"),
+    };
     let mut abstract_exprs = vec![];
     for id in parsed {
-        abstract_exprs.push(check_expr(
-            *id,
-            arena,
-            interner,
-            dot_iden,
-            let_iden,
-            def_iden,
-            question_iden,
-        )?);
+        abstract_exprs.push(checker.check_expr(*id, arena, interner)?);
     }
     Ok(arena.collect(abstract_exprs.into_iter()))
 }
@@ -600,6 +543,15 @@ mod tests {
                 &mut interner
             ),
             Err(CompileError::MalformedDef)
+        );
+        let text = "(do)";
+        assert_eq!(
+            check(
+                parse(text, &mut arena, &mut interner).unwrap(),
+                &mut arena,
+                &mut interner
+            ),
+            Err(CompileError::MalformedDo)
         );
     }
 }

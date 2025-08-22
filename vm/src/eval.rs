@@ -7,16 +7,16 @@ use arena::Arena;
 use crate::expr::{AbstractExpr, AbstractExprId};
 use crate::interner::{IdentifierId, StringInterner};
 
-pub struct Env<'a> {
+pub struct Env<'a, 'b> {
     iden_to_expr: Vec<Vec<AbstractExprId<'a>>>,
 
     builtins: HashMap<
         IdentifierId,
-        fn(&mut Arena<'a>, &[AbstractExprId<'a>]) -> Option<AbstractExprId<'a>>,
+        Box<dyn FnMut(&mut Arena<'a>, &[AbstractExprId<'a>]) -> Option<AbstractExprId<'a>> + 'b>,
     >,
 }
 
-impl<'a> Env<'a> {
+impl<'a, 'b> Env<'a, 'b> {
     pub fn new(interner: &mut StringInterner) -> Self {
         Env {
             iden_to_expr: vec![vec![]; interner.num_idens()],
@@ -29,7 +29,10 @@ impl<'a> Env<'a> {
         I: Iterator<
             Item = (
                 IdentifierId,
-                fn(&mut Arena<'a>, &[AbstractExprId<'a>]) -> Option<AbstractExprId<'a>>,
+                Box<
+                    dyn FnMut(&mut Arena<'a>, &[AbstractExprId<'a>]) -> Option<AbstractExprId<'a>>
+                        + 'b,
+                >,
             ),
         >,
     {
@@ -44,6 +47,13 @@ impl<'a> Env<'a> {
             AbstractExpr::UseIdentifier(iden) => {
                 if let Some(concrete_expr) = self.iden_to_expr[iden.idx()].last() {
                     self.eval(arena, *concrete_expr)
+                } else if self.builtins.contains_key(iden) {
+                    let func_ref = self.builtins.get_mut(iden).unwrap();
+                    if let Some(result) = func_ref(arena, &[]) {
+                        result
+                    } else {
+                        expr
+                    }
                 } else {
                     expr
                 }
@@ -62,10 +72,11 @@ impl<'a> Env<'a> {
                     }
                     return new_body;
                 } else if let AbstractExpr::UseIdentifier(func_name) = arena.get(new_func)
-                    && let Some(func_ref) = self.builtins.get(func_name)
+                    && self.builtins.contains_key(func_name)
                 {
-                    let func_ref = *func_ref;
-                    let new_args: Vec<_> = args.into_iter().map(|id| self.eval(arena, *id)).collect();
+                    let new_args: Vec<_> =
+                        args.into_iter().map(|id| self.eval(arena, *id)).collect();
+                    let func_ref = self.builtins.get_mut(func_name).unwrap();
                     if let Some(result) = func_ref(arena, &new_args) {
                         return result;
                     }
@@ -117,6 +128,13 @@ impl<'a> Env<'a> {
                     expr
                 }
             }
+            AbstractExpr::Do(steps) => {
+                let mut recent = self.eval(arena, steps[0]);
+                for step in &steps[1..] {
+                    recent = self.eval(arena, *step);
+                }
+                recent
+            }
         }
     }
 }
@@ -128,29 +146,30 @@ mod tests {
     use crate::expr::{check, dump_abstract_exprs, parse};
 
     #[test]
-    fn simple_eval() {
+    fn eval() {
         let mut buf = [0u64; 2000];
         let mut arena = Arena::new_backed(&mut buf);
-        let mut string_buf = [0u8; 20];
+        let mut string_buf = [0u8; 30];
         let string_arena = Arena::new_backed(&mut string_buf);
         let mut interner = StringInterner::new(&string_arena);
 
         let programs = &[
             "((x y . x) 42 24)",
             "(let x 73 x)",
-            "(? true 3 5)",
+            "(do (? true 3 5))",
             "(let x false (? x x 7))",
             "(def x 42.3) x",
-            "(def f (x . (? x 0.1 0.9))) (f false)",
+            "(do (def f (x . (? x 0.1 0.9))) (f false))",
             "(+ 4 3)",
             "(- 4 3)",
             "(== 4.3 3.0)",
             "(== 3 3)",
             "(def f (x . (? (== x 0) 1 (* x (f (- x 1)))))) (f 7)",
             "(let f (x . (? (== x 0) 0 (+ x (f (- x 1))))) (f 7))",
+            "(do inc inc inc inc)",
         ];
         let evals = &[
-            "42", "73", "3", "7", "42.3", "0.9", "7", "1", "false", "true", "5040", "28",
+            "42", "73", "3", "7", "42.3", "0.9", "7", "1", "false", "true", "5040", "28", "3",
         ];
 
         fn plus_func<'a>(
@@ -233,11 +252,18 @@ mod tests {
         }
 
         for (text, correct) in zip(programs, evals) {
+            let mut inc = 0;
+            let inc_gen_func = |arena: &mut Arena, _args: &[AbstractExprId]| {
+                let expr = arena.alloc(AbstractExpr::FixedLit(inc));
+                inc += 1;
+                Some(expr)
+            };
             let builtins = vec![
-                (interner.intern("+"), plus_func as _),
-                (interner.intern("-"), minus_func as _),
-                (interner.intern("*"), times_func as _),
-                (interner.intern("=="), equals_equals_func as _),
+                (interner.intern("+"), Box::new(plus_func) as _),
+                (interner.intern("-"), Box::new(minus_func) as _),
+                (interner.intern("*"), Box::new(times_func) as _),
+                (interner.intern("=="), Box::new(equals_equals_func) as _),
+                (interner.intern("inc"), Box::new(inc_gen_func) as _),
             ];
             let parse_exprs = parse(text, &mut arena, &mut interner).unwrap();
             let abstract_exprs = check(parse_exprs, &mut arena, &mut interner).unwrap();
