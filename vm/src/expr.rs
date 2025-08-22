@@ -79,6 +79,32 @@ pub enum AbstractExpr<'a> {
     IfElse(AbstractExprId<'a>, AbstractExprId<'a>, AbstractExprId<'a>),
 }
 
+impl<'a> AbstractExpr<'a> {
+    pub fn try_bool(&self) -> Option<bool> {
+        if let AbstractExpr::BoolLit(lit) = self {
+            Some(*lit)
+        } else {
+            None
+        }
+    }
+
+    pub fn try_fixed(&self) -> Option<i64> {
+        if let AbstractExpr::FixedLit(lit) = self {
+            Some(*lit)
+        } else {
+            None
+        }
+    }
+
+    pub fn try_float(&self) -> Option<f64> {
+        if let AbstractExpr::FloatLit(lit) = self {
+            Some(*lit)
+        } else {
+            None
+        }
+    }
+}
+
 fn dump_abstract_expr<'a, 'b>(
     s: &mut String,
     expr: AbstractExprId<'a>,

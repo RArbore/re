@@ -1,5 +1,6 @@
 use core::iter::zip;
 use core::mem::take;
+use std::collections::HashMap;
 
 use arena::Arena;
 
@@ -9,25 +10,30 @@ use crate::interner::{IdentifierId, StringInterner};
 pub struct Env<'a> {
     iden_to_expr: Vec<Vec<AbstractExprId<'a>>>,
 
-    plus_id: IdentifierId,
-    minus_id: IdentifierId,
-    multiply_id: IdentifierId,
-    divide_id: IdentifierId,
-    equals_equals_id: IdentifierId,
-    not_equals_id: IdentifierId,
+    builtins: HashMap<
+        IdentifierId,
+        fn(&mut Arena<'a>, &[AbstractExprId<'a>]) -> Option<AbstractExprId<'a>>,
+    >,
 }
 
 impl<'a> Env<'a> {
     pub fn new(interner: &mut StringInterner) -> Self {
         Env {
             iden_to_expr: vec![vec![]; interner.num_idens()],
-            plus_id: interner.intern("+"),
-            minus_id: interner.intern("-"),
-            multiply_id: interner.intern("*"),
-            divide_id: interner.intern("/"),
-            equals_equals_id: interner.intern("=="),
-            not_equals_id: interner.intern("!="),
+            builtins: HashMap::new(),
         }
+    }
+
+    pub fn register_bindings<I>(&mut self, functions: I)
+    where
+        I: Iterator<
+            Item = (
+                IdentifierId,
+                fn(&mut Arena<'a>, &[AbstractExprId<'a>]) -> Option<AbstractExprId<'a>>,
+            ),
+        >,
+    {
+        self.builtins.extend(functions);
     }
 
     pub fn eval(&mut self, arena: &mut Arena<'a>, expr: AbstractExprId<'a>) -> AbstractExprId<'a> {
@@ -54,12 +60,18 @@ impl<'a> Env<'a> {
                     for param_iden in params.into_iter() {
                         self.iden_to_expr[param_iden.idx()].pop();
                     }
-                    new_body
+                    return new_body;
                 } else if let AbstractExpr::UseIdentifier(func_name) = arena.get(new_func)
-                    && let Some(result) = self.try_builtin(arena, *func_name, *args)
+                    && let Some(func_ref) = self.builtins.get(func_name)
                 {
-                    result
-                } else if new_func != *func {
+                    let func_ref = *func_ref;
+                    let new_args: Vec<_> = args.into_iter().map(|id| self.eval(arena, *id)).collect();
+                    if let Some(result) = func_ref(arena, &new_args) {
+                        return result;
+                    }
+                }
+
+                if new_func != *func {
                     arena.alloc(AbstractExpr::Apply(new_func, args))
                 } else {
                     expr
@@ -107,95 +119,6 @@ impl<'a> Env<'a> {
             }
         }
     }
-
-    fn try_builtin(
-        &mut self,
-        arena: &mut Arena<'a>,
-        func: IdentifierId,
-        args: &'a [AbstractExprId<'a>],
-    ) -> Option<AbstractExprId<'a>> {
-        if func == self.plus_id && args.len() == 2 {
-            let lhs = self.eval(arena, args[0]);
-            let rhs = self.eval(arena, args[1]);
-            match (arena.get(lhs), arena.get(rhs)) {
-                (AbstractExpr::FixedLit(lhs), AbstractExpr::FixedLit(rhs)) => {
-                    Some(arena.alloc(AbstractExpr::FixedLit(lhs + rhs)))
-                }
-                (AbstractExpr::FloatLit(lhs), AbstractExpr::FloatLit(rhs)) => {
-                    Some(arena.alloc(AbstractExpr::FloatLit(lhs + rhs)))
-                }
-                _ => None,
-            }
-        } else if func == self.minus_id && args.len() == 2 {
-            let lhs = self.eval(arena, args[0]);
-            let rhs = self.eval(arena, args[1]);
-            match (arena.get(lhs), arena.get(rhs)) {
-                (AbstractExpr::FixedLit(lhs), AbstractExpr::FixedLit(rhs)) => {
-                    Some(arena.alloc(AbstractExpr::FixedLit(lhs - rhs)))
-                }
-                (AbstractExpr::FloatLit(lhs), AbstractExpr::FloatLit(rhs)) => {
-                    Some(arena.alloc(AbstractExpr::FloatLit(lhs - rhs)))
-                }
-                _ => None,
-            }
-        } else if func == self.multiply_id && args.len() == 2 {
-            let lhs = self.eval(arena, args[0]);
-            let rhs = self.eval(arena, args[1]);
-            match (arena.get(lhs), arena.get(rhs)) {
-                (AbstractExpr::FixedLit(lhs), AbstractExpr::FixedLit(rhs)) => {
-                    Some(arena.alloc(AbstractExpr::FixedLit(lhs * rhs)))
-                }
-                (AbstractExpr::FloatLit(lhs), AbstractExpr::FloatLit(rhs)) => {
-                    Some(arena.alloc(AbstractExpr::FloatLit(lhs * rhs)))
-                }
-                _ => None,
-            }
-        } else if func == self.divide_id && args.len() == 2 {
-            let lhs = self.eval(arena, args[0]);
-            let rhs = self.eval(arena, args[1]);
-            match (arena.get(lhs), arena.get(rhs)) {
-                (AbstractExpr::FixedLit(lhs), AbstractExpr::FixedLit(rhs)) => {
-                    Some(arena.alloc(AbstractExpr::FixedLit(lhs / rhs)))
-                }
-                (AbstractExpr::FloatLit(lhs), AbstractExpr::FloatLit(rhs)) => {
-                    Some(arena.alloc(AbstractExpr::FloatLit(lhs / rhs)))
-                }
-                _ => None,
-            }
-        } else if func == self.equals_equals_id && args.len() == 2 {
-            let lhs = self.eval(arena, args[0]);
-            let rhs = self.eval(arena, args[1]);
-            match (arena.get(lhs), arena.get(rhs)) {
-                (AbstractExpr::BoolLit(lhs), AbstractExpr::BoolLit(rhs)) => {
-                    Some(arena.alloc(AbstractExpr::BoolLit(lhs == rhs)))
-                }
-                (AbstractExpr::FixedLit(lhs), AbstractExpr::FixedLit(rhs)) => {
-                    Some(arena.alloc(AbstractExpr::BoolLit(lhs == rhs)))
-                }
-                (AbstractExpr::FloatLit(lhs), AbstractExpr::FloatLit(rhs)) => {
-                    Some(arena.alloc(AbstractExpr::BoolLit(lhs == rhs)))
-                }
-                _ => None,
-            }
-        } else if func == self.not_equals_id && args.len() == 2 {
-            let lhs = self.eval(arena, args[0]);
-            let rhs = self.eval(arena, args[1]);
-            match (arena.get(lhs), arena.get(rhs)) {
-                (AbstractExpr::BoolLit(lhs), AbstractExpr::BoolLit(rhs)) => {
-                    Some(arena.alloc(AbstractExpr::BoolLit(lhs != rhs)))
-                }
-                (AbstractExpr::FixedLit(lhs), AbstractExpr::FixedLit(rhs)) => {
-                    Some(arena.alloc(AbstractExpr::BoolLit(lhs != rhs)))
-                }
-                (AbstractExpr::FloatLit(lhs), AbstractExpr::FloatLit(rhs)) => {
-                    Some(arena.alloc(AbstractExpr::BoolLit(lhs != rhs)))
-                }
-                _ => None,
-            }
-        } else {
-            None
-        }
-    }
 }
 
 #[cfg(test)]
@@ -230,11 +153,97 @@ mod tests {
             "42", "73", "3", "7", "42.3", "0.9", "7", "1", "false", "true", "5040", "28",
         ];
 
+        fn plus_func<'a>(
+            arena: &mut Arena<'a>,
+            args: &[AbstractExprId<'a>],
+        ) -> Option<AbstractExprId<'a>> {
+            if args.len() != 2 {
+                return None;
+            }
+
+            match (arena.get(args[0]), arena.get(args[1])) {
+                (AbstractExpr::FixedLit(lhs), AbstractExpr::FixedLit(rhs)) => {
+                    Some(arena.alloc(AbstractExpr::FixedLit(lhs + rhs)))
+                }
+                (AbstractExpr::FloatLit(lhs), AbstractExpr::FloatLit(rhs)) => {
+                    Some(arena.alloc(AbstractExpr::FloatLit(lhs + rhs)))
+                }
+                _ => None,
+            }
+        }
+
+        fn minus_func<'a>(
+            arena: &mut Arena<'a>,
+            args: &[AbstractExprId<'a>],
+        ) -> Option<AbstractExprId<'a>> {
+            if args.len() != 2 {
+                return None;
+            }
+
+            match (arena.get(args[0]), arena.get(args[1])) {
+                (AbstractExpr::FixedLit(lhs), AbstractExpr::FixedLit(rhs)) => {
+                    Some(arena.alloc(AbstractExpr::FixedLit(lhs - rhs)))
+                }
+                (AbstractExpr::FloatLit(lhs), AbstractExpr::FloatLit(rhs)) => {
+                    Some(arena.alloc(AbstractExpr::FloatLit(lhs - rhs)))
+                }
+                _ => None,
+            }
+        }
+
+        fn times_func<'a>(
+            arena: &mut Arena<'a>,
+            args: &[AbstractExprId<'a>],
+        ) -> Option<AbstractExprId<'a>> {
+            if args.len() != 2 {
+                return None;
+            }
+
+            match (arena.get(args[0]), arena.get(args[1])) {
+                (AbstractExpr::FixedLit(lhs), AbstractExpr::FixedLit(rhs)) => {
+                    Some(arena.alloc(AbstractExpr::FixedLit(lhs * rhs)))
+                }
+                (AbstractExpr::FloatLit(lhs), AbstractExpr::FloatLit(rhs)) => {
+                    Some(arena.alloc(AbstractExpr::FloatLit(lhs * rhs)))
+                }
+                _ => None,
+            }
+        }
+
+        fn equals_equals_func<'a>(
+            arena: &mut Arena<'a>,
+            args: &[AbstractExprId<'a>],
+        ) -> Option<AbstractExprId<'a>> {
+            if args.len() != 2 {
+                return None;
+            }
+
+            match (arena.get(args[0]), arena.get(args[1])) {
+                (AbstractExpr::FixedLit(lhs), AbstractExpr::FixedLit(rhs)) => {
+                    Some(arena.alloc(AbstractExpr::BoolLit(lhs == rhs)))
+                }
+                (AbstractExpr::FloatLit(lhs), AbstractExpr::FloatLit(rhs)) => {
+                    Some(arena.alloc(AbstractExpr::BoolLit(lhs == rhs)))
+                }
+                (AbstractExpr::BoolLit(lhs), AbstractExpr::BoolLit(rhs)) => {
+                    Some(arena.alloc(AbstractExpr::BoolLit(lhs == rhs)))
+                }
+                _ => None,
+            }
+        }
+
         for (text, correct) in zip(programs, evals) {
+            let builtins = vec![
+                (interner.intern("+"), plus_func as _),
+                (interner.intern("-"), minus_func as _),
+                (interner.intern("*"), times_func as _),
+                (interner.intern("=="), equals_equals_func as _),
+            ];
             let parse_exprs = parse(text, &mut arena, &mut interner).unwrap();
             let abstract_exprs = check(parse_exprs, &mut arena, &mut interner).unwrap();
             assert!(!abstract_exprs.is_empty());
             let mut env = Env::new(&mut interner);
+            env.register_bindings(builtins.into_iter());
             let mut evaled = env.eval(&mut arena, abstract_exprs[0]);
             for expr in &abstract_exprs[1..] {
                 evaled = env.eval(&mut arena, *expr);

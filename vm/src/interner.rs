@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use arena::Arena;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct IdentifierId(u32);
 
 impl IdentifierId {
@@ -11,6 +11,7 @@ impl IdentifierId {
     }
 }
 
+#[derive(Debug)]
 pub struct StringInterner<'a, 'b> {
     str_to_id: HashMap<&'a str, IdentifierId>,
     id_to_str: Vec<&'a str>,
