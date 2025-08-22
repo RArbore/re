@@ -1,5 +1,5 @@
 use core::iter::zip;
-use core::mem::take;
+use core::mem::{MaybeUninit, replace, take};
 use std::collections::HashMap;
 
 use arena::Arena;
@@ -12,7 +12,7 @@ pub struct Env<'a, 'b> {
 
     builtins: HashMap<
         IdentifierId,
-        Box<dyn FnMut(&mut Arena<'a>, &[AbstractExprId<'a>]) -> Option<AbstractExprId<'a>> + 'b>,
+        Box<dyn FnMut(&Arena<'a>, &[AbstractExprId<'a>]) -> Option<AbstractExprId<'a>> + 'b>,
     >,
 }
 
@@ -30,8 +30,7 @@ impl<'a, 'b> Env<'a, 'b> {
             Item = (
                 IdentifierId,
                 Box<
-                    dyn FnMut(&mut Arena<'a>, &[AbstractExprId<'a>]) -> Option<AbstractExprId<'a>>
-                        + 'b,
+                    dyn FnMut(&Arena<'a>, &[AbstractExprId<'a>]) -> Option<AbstractExprId<'a>> + 'b,
                 >,
             ),
         >,
@@ -39,7 +38,7 @@ impl<'a, 'b> Env<'a, 'b> {
         self.builtins.extend(functions);
     }
 
-    pub fn eval(&mut self, arena: &mut Arena<'a>, expr: AbstractExprId<'a>) -> AbstractExprId<'a> {
+    pub fn eval(&mut self, arena: &Arena<'a>, expr: AbstractExprId<'a>) -> AbstractExprId<'a> {
         match arena.get(expr) {
             AbstractExpr::BoolLit(_) | AbstractExpr::FixedLit(_) | AbstractExpr::FloatLit(_) => {
                 expr
@@ -74,8 +73,8 @@ impl<'a, 'b> Env<'a, 'b> {
                 } else if let AbstractExpr::UseIdentifier(func_name) = arena.get(new_func)
                     && self.builtins.contains_key(func_name)
                 {
-                    let new_args: Vec<_> =
-                        args.into_iter().map(|id| self.eval(arena, *id)).collect();
+                    let new_args =
+                        arena.collect_exact(args.into_iter().map(|id| self.eval(arena, *id)));
                     let func_ref = self.builtins.get_mut(func_name).unwrap();
                     if let Some(result) = func_ref(arena, &new_args) {
                         return result;
@@ -89,10 +88,9 @@ impl<'a, 'b> Env<'a, 'b> {
                 }
             }
             AbstractExpr::Abstract(params, body) => {
-                let extracted_env: Vec<_> = params
-                    .into_iter()
-                    .map(|param_iden| take(&mut self.iden_to_expr[param_iden.idx()]))
-                    .collect();
+                let extracted_env = arena.collect_exact(params.into_iter().map(|param_iden| {
+                    MaybeUninit::new(take(&mut self.iden_to_expr[param_iden.idx()]))
+                }));
                 let new_body = self.eval(arena, *body);
                 let new_expr = if *body != new_body {
                     arena.alloc(AbstractExpr::Abstract(params, new_body))
@@ -100,7 +98,8 @@ impl<'a, 'b> Env<'a, 'b> {
                     expr
                 };
                 for (param_iden, bindings) in zip(params.into_iter(), extracted_env.into_iter()) {
-                    self.iden_to_expr[param_iden.idx()] = bindings;
+                    self.iden_to_expr[param_iden.idx()] =
+                        unsafe { replace(bindings, MaybeUninit::uninit()).assume_init() };
                 }
                 new_expr
             }
@@ -173,7 +172,7 @@ mod tests {
         ];
 
         fn plus_func<'a>(
-            arena: &mut Arena<'a>,
+            arena: &Arena<'a>,
             args: &[AbstractExprId<'a>],
         ) -> Option<AbstractExprId<'a>> {
             if args.len() != 2 {
@@ -192,7 +191,7 @@ mod tests {
         }
 
         fn minus_func<'a>(
-            arena: &mut Arena<'a>,
+            arena: &Arena<'a>,
             args: &[AbstractExprId<'a>],
         ) -> Option<AbstractExprId<'a>> {
             if args.len() != 2 {
@@ -211,7 +210,7 @@ mod tests {
         }
 
         fn times_func<'a>(
-            arena: &mut Arena<'a>,
+            arena: &Arena<'a>,
             args: &[AbstractExprId<'a>],
         ) -> Option<AbstractExprId<'a>> {
             if args.len() != 2 {
@@ -230,7 +229,7 @@ mod tests {
         }
 
         fn equals_equals_func<'a>(
-            arena: &mut Arena<'a>,
+            arena: &Arena<'a>,
             args: &[AbstractExprId<'a>],
         ) -> Option<AbstractExprId<'a>> {
             if args.len() != 2 {
@@ -253,7 +252,7 @@ mod tests {
 
         for (text, correct) in zip(programs, evals) {
             let mut inc = 0;
-            let inc_gen_func = |arena: &mut Arena, _args: &[AbstractExprId]| {
+            let inc_gen_func = |arena: &Arena, _args: &[AbstractExprId]| {
                 let expr = arena.alloc(AbstractExpr::FixedLit(inc));
                 inc += 1;
                 Some(expr)
@@ -266,13 +265,13 @@ mod tests {
                 (interner.intern("inc"), Box::new(inc_gen_func) as _),
             ];
             let parse_exprs = parse(text, &mut arena, &mut interner).unwrap();
-            let abstract_exprs = check(parse_exprs, &mut arena, &mut interner).unwrap();
+            let abstract_exprs = check(parse_exprs, &arena, &mut interner).unwrap();
             assert!(!abstract_exprs.is_empty());
             let mut env = Env::new(&mut interner);
             env.register_bindings(builtins.into_iter());
-            let mut evaled = env.eval(&mut arena, abstract_exprs[0]);
+            let mut evaled = env.eval(&arena, abstract_exprs[0]);
             for expr in &abstract_exprs[1..] {
-                evaled = env.eval(&mut arena, *expr);
+                evaled = env.eval(&arena, *expr);
             }
             let dumped_text = dump_abstract_exprs(&[evaled], &arena, &interner);
             assert_eq!(&dumped_text, *correct);

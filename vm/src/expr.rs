@@ -287,7 +287,7 @@ pub fn parse<'a, 'b>(
     }
 
     if paren_stack.is_empty() {
-        Ok(arena.collect(expr_stack.into_iter()))
+        Ok(arena.collect_exact(expr_stack.into_iter()))
     } else {
         Err(CompileError::TooFewRightParentheses)
     }
@@ -305,7 +305,7 @@ impl Checker {
     fn check_expr<'a, 'b>(
         &self,
         parsed: ParseExprId<'a>,
-        arena: &'b mut Arena<'a>,
+        arena: &'b Arena<'a>,
         interner: &mut StringInterner,
     ) -> Result<AbstractExprId<'a>, CompileError> {
         let expr = match arena.get(parsed) {
@@ -342,7 +342,7 @@ impl Checker {
                         .into_iter()
                         .map(|expr| self.check_expr(*expr, arena, interner))
                         .collect();
-                    let steps = arena.collect(steps?.into_iter());
+                    let steps = arena.collect_exact(steps?.into_iter());
                     arena.alloc(AbstractExpr::Do(steps))
                 } else if *arena.get(exprs[0]) == ParseExpr::Identifier(self.let_iden) {
                     if exprs.len() != 4 {
@@ -383,7 +383,7 @@ impl Checker {
                             Ok(*param)
                         })
                         .collect();
-                    let params = arena.collect(params?.into_iter());
+                    let params = arena.collect_exact(params?.into_iter());
                     let body_expr = self.check_expr(*exprs.last().unwrap(), arena, interner)?;
                     arena.alloc(AbstractExpr::Abstract(params, body_expr))
                 } else if exprs.len() == 1 {
@@ -394,7 +394,7 @@ impl Checker {
                         .into_iter()
                         .map(|parsed| self.check_expr(*parsed, arena, interner))
                         .collect();
-                    let arg_exprs = arena.collect(arg_exprs?.into_iter());
+                    let arg_exprs = arena.collect_exact(arg_exprs?.into_iter());
                     arena.alloc(AbstractExpr::Apply(func_expr, arg_exprs))
                 }
             }
@@ -405,7 +405,7 @@ impl Checker {
 
 pub fn check<'a, 'b>(
     parsed: &'a [ParseExprId<'a>],
-    arena: &'b mut Arena<'a>,
+    arena: &'b Arena<'a>,
     interner: &mut StringInterner,
 ) -> Result<&'a [AbstractExprId<'a>], CompileError> {
     let checker = Checker {
@@ -419,7 +419,7 @@ pub fn check<'a, 'b>(
     for id in parsed {
         abstract_exprs.push(checker.check_expr(*id, arena, interner)?);
     }
-    Ok(arena.collect(abstract_exprs.into_iter()))
+    Ok(arena.collect_exact(abstract_exprs.into_iter()))
 }
 
 #[cfg(test)]

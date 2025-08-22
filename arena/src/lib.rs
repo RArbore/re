@@ -260,6 +260,23 @@ impl<'a> Arena<'a> {
         unsafe { slice::from_raw_parts_mut(ptr, count) }
     }
 
+    pub fn collect_exact<'b, T, I>(&'b self, iter: I) -> &'a mut [T]
+    where
+        I: ExactSizeIterator<Item = T>,
+    {
+        const {
+            assert!(!needs_drop::<T>());
+        }
+        let begin_offset = self.arena.alloc(iter.len() * size_of::<T>(), Some(align_of::<T>()));
+        let mut count = 0;
+        let ptr = unsafe { self.arena.ptr.add(begin_offset) } as *mut T;
+        for x in iter {
+            unsafe { *ptr.add(count) = x };
+            count += 1;
+        }
+        unsafe { slice::from_raw_parts_mut(ptr, count) }
+    }
+
     pub fn collect_fn<'b, T, F>(&'b mut self, f: F) -> &'a mut [T]
     where
         F: FnOnce(&mut dyn FnMut(T) -> BrandedArenaId<T>),
@@ -476,5 +493,13 @@ mod tests {
         for i in 0..128u8 {
             assert_eq!(slice[i as usize], i + 5);
         }
+    }
+
+    #[test]
+    fn collect_exact_iter_backed_arena() {
+        let mut buf: [u64; 32] = [0; 32];
+        let arena = Arena::new_backed(&mut buf);
+        let slice = arena.collect_exact(0..16i32);
+        assert_eq!(slice, &(0..16i32).collect::<Vec<_>>());
     }
 }
